@@ -28,7 +28,7 @@ export default function Home() {
           </p>
           <div className="hero-actions">
             <Link className="button button-dark" to="/order">ORDER GAS <span>↗</span></Link>
-            <Link className="text-link" to="/products">SEE PRICES <span>→</span></Link>
+            <Link className="button button-light" to="/products">SEE PRICES <span>→</span></Link>
           </div>
           </Pop>
         </div>

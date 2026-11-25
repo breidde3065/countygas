@@ -192,7 +192,7 @@ function parseOrder(b) {
 
 /* ---------- app ---------- */
 const app = express();
-app.set('trust proxy', 1);
+app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 1)); // trust first proxy by default, for req.ip and rate limiting
 app.use(express.json({ limit: '100kb' }));
 app.use((_req, res, next) => { res.set('X-Content-Type-Options', 'nosniff'); next(); });
 app.use('/uploads', express.static(uploadDir, { maxAge: '7d', index: false }));

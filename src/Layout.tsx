@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import type { Branch, Business } from './data';
 import { useSettings } from './settings';
-import { useBranch, waLink } from './lib';
+//import { useBranch, waLink } from './lib';
 import ScrollBackground from './ScrollBackground';
 
 const links = [
@@ -30,7 +30,7 @@ const buildSchema = (business: Business, branches: Branch[]) => ({
 export default function Layout() {
   const [menuOpen, setMenuOpen] = useState(false);
   const { pathname } = useLocation();
-  const { branch } = useBranch();
+  //const { branch } = useBranch();
   const { business, branches } = useSettings();
   const schema = buildSchema(business, branches);
 
@@ -57,8 +57,8 @@ export default function Layout() {
     };
   }, []);
 
-  const phone = branch?.phone ?? business.phone;
-  const whatsapp = branch?.whatsapp ?? business.whatsapp;
+  //const phone = branch?.phone ?? business.phone;
+  //const whatsapp = branch?.whatsapp ?? business.whatsapp;
 
   return (
     <>
@@ -111,13 +111,14 @@ export default function Layout() {
         </div>
         <small>© {new Date().getFullYear()} {business.name.toUpperCase()}. ALL RIGHTS RESERVED.</small>
       </footer>
-
-      <nav className="mobile-bar" aria-label="Quick actions">
+        {pathname !== '/order' && !pathname.startsWith('/admin') &&
+         <Link className="fab-order" to="/order">Order</Link>}
+{/*       <nav className="mobile-bar" aria-label="Quick actions">
         <a href={`tel:${phone}`}>CALL</a>
         <a href={waLink(whatsapp, 'Hello, I need gas.')} target="_blank" rel="noopener noreferrer">WHATSAPP</a>
         <Link to="/order">ORDER</Link>
         <Link to="/track">Track an order</Link>
-      </nav>
+      </nav--!>  */}
     </>
   );
 }

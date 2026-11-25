@@ -3,22 +3,24 @@ import type { FormEvent, ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, useCatalog } from '../api';
 import { useSettings } from '../settings';
-import { kes, status, useBranch, usePageTitle, waLink } from '../lib';
+import { kes, status, useBranch, usePageTitle } from '../lib';
 import { PageHead } from '../ui';
 
 type Kind = 'refill' | 'fresh';
 type Line = { id: number; size: string; kind: Kind; qty: number; brand: string };
 type Errors = Partial<Record<'name' | 'phone' | 'branch' | 'location', string>>;
 type Option = { value: string; title: string; text?: string };
+type Receipt = { ref: string; branchName: string; branchPhone: string; mode: 'delivery' | 'pickup'; lines: { label: string; amount: number }[]; total: number; deliveryFee: number };
 
 let nextId = 1;
 const normalisePhone = (v: string) => v.replace(/[\s-]/g, '');
 const validPhone = (v: string) => /^(?:\+?254|0)?[17]\d{8}$/.test(normalisePhone(v));
+const label = (l: Line) => `${l.qty} x ${l.size} kg ${l.kind === 'refill' ? 'refill' : 'new cylinder'}${l.brand ? ` (${l.brand})` : ''}`;
 
-function Field({ id, label, error, hint, children }: { id: string; label: string; error?: string; hint?: string; children: ReactNode }) {
+function Field({ id, label: text, error, hint, children }: { id: string; label: string; error?: string; hint?: string; children: ReactNode }) {
   return (
     <div className="field">
-      <label htmlFor={id}>{label}</label>
+      <label htmlFor={id}>{text}</label>
       {children}
       {hint && !error && <p className="field-hint" id={`${id}-note`}>{hint}</p>}
       {error && <p className="field-error" id={`${id}-note`} role="alert">{error}</p>}
@@ -26,12 +28,12 @@ function Field({ id, label, error, hint, children }: { id: string; label: string
   );
 }
 
-function Choices({ name, label, value, onChange, options, compact }: {
+function Choices({ name, label: text, value, onChange, options, compact }: {
   name: string; label: string; value: string; onChange: (v: string) => void; options: Option[]; compact?: boolean;
 }) {
   return (
     <fieldset className="choice-set">
-      <legend>{label}</legend>
+      <legend>{text}</legend>
       <div className={`choices${compact ? ' compact' : ''}`}>
         {options.map((o) => (
           <label key={o.value} className="choice">
@@ -58,6 +60,9 @@ export default function Order() {
   usePageTitle('Order');
   const { branches, brands, sizes } = useSettings();
   const catalog = useCatalog();
+  const [params] = useSearchParams();
+  const { branch, setBranch } = useBranch();
+
   const priceOf = (l: Line) => {
     // a matching admin product wins, then the standard price for that size
     const match = catalog.find((p) => !p.id.startsWith('static') && p.inStock && p.category === 'cylinder' && p.size === l.size && (!l.brand || p.brand === l.brand));
@@ -65,19 +70,12 @@ export default function Order() {
     if (match) return l.kind === 'refill' ? (match.refillPrice ?? base.refill) : match.price;
     return l.kind === 'refill' ? base.refill : base.fresh;
   };
-  const [params] = useSearchParams();
-  const { branch, setBranch } = useBranch();
 
+  const defaultSize = (sizes.find((s) => s.kg === '13') ?? sizes[0]).kg;
   const sizeParam = params.get('size');
   const accessory = params.get('accessory');
   const [lines, setLines] = useState<Line[]>([
-    {
-      id: nextId++,
-      size: sizes.some((s) => s.kg === sizeParam) ? (sizeParam as string) : (sizes.find((s) => s.kg === '13') ?? sizes[0]).kg,
-      kind: params.get('type') === 'fresh' ? 'fresh' : 'refill',
-      qty: 1,
-      brand: '',
-    },
+    { id: nextId++, size: sizes.some((s) => s.kg === sizeParam) ? (sizeParam as string) : defaultSize, kind: params.get('type') === 'fresh' ? 'fresh' : 'refill', qty: 1, brand: '' },
   ]);
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -87,9 +85,9 @@ export default function Order() {
   const [payment, setPayment] = useState('M-Pesa on delivery');
   const [note, setNote] = useState(accessory ? `Also interested in: ${accessory}` : '');
   const [errors, setErrors] = useState<Errors>({});
-  const [sentLink, setSentLink] = useState<string | null>(null);
-  const [sentRef, setSentRef] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState('');
+  const [receipt, setReceipt] = useState<Receipt | null>(null);
 
   const chosen = branches.find((b) => b.id === branchId);
   const total = lines.reduce((sum, l) => sum + priceOf(l) * l.qty, 0);
@@ -111,71 +109,55 @@ export default function Order() {
       return;
     }
 
-    // Open the WhatsApp tab now (browsers only allow it on a tap), then point it at the message once the order is saved.
-    const tab = window.open('about:blank', '_blank');
     setSending(true);
-    let ref: string | null = null;
+    setSendError('');
+    const deliveryFee = mode === 'delivery' ? chosen.delivery.fee : 0;
     try {
       const saved = await api<{ ref: string }>('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: name.trim(), phone: normalisePhone(phone), branchId: chosen.id, branchName: chosen.name, mode, location: location.trim(), payment, note: note.trim(),
-          deliveryFee: mode === 'delivery' ? chosen.delivery.fee : 0,
+          name: name.trim(), phone: normalisePhone(phone), branchId: chosen.id, branchName: chosen.name, mode, location: location.trim(), payment, note: note.trim(), deliveryFee,
           items: lines.map((l) => ({ size: l.size, kind: l.kind, qty: l.qty, brand: l.brand, unitPrice: priceOf(l) })),
         }),
       });
-      ref = saved.ref;
-    } catch { /* the order still goes out on WhatsApp, just without a tracking reference */ }
-
-    const items = lines.map((l) => `- ${l.qty} x ${l.size} kg ${l.kind === 'refill' ? 'refill' : 'new cylinder'}${l.brand ? ` (${l.brand})` : ''}`);
-    const text = [
-      'New order from the website',
-      ref && `Order ref: ${ref}`,
-      `Name: ${name.trim()}`,
-      `Phone: ${normalisePhone(phone)}`,
-      `Branch: ${chosen.name}`,
-      'Items:',
-      ...items,
-      mode === 'delivery' ? `Delivery to: ${location.trim()}` : 'Pickup from the branch',
-      `Payment: ${payment}`,
-      `Cylinders total: ${kes(total)}${mode === 'delivery' ? ` (delivery fee ${kes(chosen.delivery.fee)} confirmed by the branch)` : ''}`,
-      note.trim() && `Note: ${note.trim()}`,
-    ].filter(Boolean).join('\n');
-
-    const link = waLink(chosen.whatsapp, text);
-    setBranch(chosen.id);
-    setSentRef(ref);
-    setSentLink(link);
-    setSending(false);
-    if (tab) { tab.opener = null; tab.location.href = link; }
+      setBranch(chosen.id);
+      setReceipt({ ref: saved.ref, branchName: chosen.name, branchPhone: chosen.phone, mode: mode as Receipt['mode'], lines: lines.map((l) => ({ label: label(l), amount: priceOf(l) * l.qty })), total, deliveryFee });
+      window.scrollTo(0, 0);
+    } catch (err) {
+      const x = err as Error & { status?: number };
+      setSendError(x.status === 400 || x.status === 429 ? x.message : 'We couldn’t send your order just now. Please try again, or call the branch to place it.');
+    } finally {
+      setSending(false);
+    }
   };
 
-  if (sentLink) {
+  const startAnother = () => {
+    setReceipt(null);
+    setNote('');
+    setLines([{ id: nextId++, size: defaultSize, kind: 'refill', qty: 1, brand: '' }]);
+  };
+
+  if (receipt) {
     return (
       <>
-        <PageHead eyebrow="ORDER" title={<>ALMOST <em>THERE.</em></>} lead="WhatsApp should have opened with your order filled in. Press send there and the branch will confirm with you." />
+        <PageHead eyebrow="ORDER" title={<>ORDER <em>SENT.</em></>} lead={`Your order is with the ${receipt.branchName} branch. They’ll contact you to confirm the price and delivery time.`} />
         <section className="page-body">
           <div className="panel done">
             <div className="done-mark" aria-hidden="true">✓</div>
-            <h2 className="panel-title">Your order is ready to send</h2>
-            {sentRef ? (
-              <>
-                <p className="panel-note">Your order reference</p>
-                <div className="ref-box">{sentRef}</div>
-                <p className="panel-note">Keep it to track your order. It is only placed once you press send in WhatsApp.</p>
-                <div className="actions"><Link className="button button-soft" to={`/track?ref=${sentRef}`}>Track this order</Link></div>
-              </>
-            ) : (
-              <p className="panel-note">We couldn’t save a tracking reference this time, but your order is ready to send. It is only placed once you press send in WhatsApp.</p>
-            )}
+            <h2 className="panel-title">Thank you, your order is in</h2>
+            <p className="panel-note">Your order reference</p>
+            <div className="ref-box">{receipt.ref}</div>
+            <p className="panel-note">Keep it to track your order.</p>
             <dl className="kv">
-              {lines.map((l) => (<div key={l.id}><dt>{l.qty} x {l.size} kg {l.kind === 'refill' ? 'refill' : 'new'}</dt><dd>{kes(priceOf(l) * l.qty)}</dd></div>))}
-              <div><dt>Branch</dt><dd>{chosen?.name}</dd></div>
+              {receipt.lines.map((l, i) => (<div key={i}><dt>{l.label}</dt><dd>{kes(l.amount)}</dd></div>))}
+              <div><dt>Cylinders total</dt><dd><strong>{kes(receipt.total)}</strong></dd></div>
+              <div><dt>{receipt.mode === 'delivery' ? 'Delivery fee' : 'Pickup'}</dt><dd>{receipt.mode === 'delivery' ? kes(receipt.deliveryFee) : 'From the branch'}</dd></div>
             </dl>
             <div className="actions">
-              <a className="button button-dark" href={sentLink} target="_blank" rel="noopener noreferrer">Open WhatsApp again</a>
-              <button type="button" className="button button-soft" onClick={() => { setSentLink(null); setSentRef(null); }}>Edit order</button>
+              <Link className="button button-dark" to={`/track?ref=${receipt.ref}`}>Track this order</Link>
+              <a className="button button-soft" href={`tel:${receipt.branchPhone}`}>Call {receipt.branchName}</a>
+              <button type="button" className="button button-soft" onClick={startAnother}>Place another order</button>
             </div>
           </div>
         </section>
@@ -185,7 +167,7 @@ export default function Order() {
 
   return (
     <>
-      <PageHead eyebrow="ORDER" title={<>ORDER YOUR <em>GAS.</em></>} lead="Tell us what you need. We send it to your branch on WhatsApp and they confirm price and timing." />
+      <PageHead eyebrow="ORDER" title={<>ORDER YOUR <em>GAS.</em></>} lead="Tell us what you need. Your branch will contact you to confirm the price and delivery time." />
 
       <section className="page-body">
         <form className="order-grid" onSubmit={submit} noValidate>
@@ -219,7 +201,7 @@ export default function Order() {
                 </div>
               ))}
               {lines.length < 5 && (
-                <button type="button" className="button button-soft" onClick={() => setLines((ls) => [...ls, { id: nextId++, size: sizes[0].kg, kind: 'refill', qty: 1, brand: '' }])}>
+                <button type="button" className="button button-soft" onClick={() => setLines((ls) => [...ls, { id: nextId++, size: defaultSize, kind: 'refill', qty: 1, brand: '' }])}>
                   Add another item
                 </button>
               )}
@@ -271,8 +253,14 @@ export default function Order() {
               <div><dt>Cylinders total</dt><dd><strong>{kes(total)}</strong></dd></div>
               <div><dt>Delivery</dt><dd>{mode === 'pickup' ? 'None' : chosen ? kes(chosen.delivery.fee) : 'Choose a branch'}</dd></div>
             </dl>
-            <p className="panel-note">The branch confirms the final price, brand availability and timing on WhatsApp.</p>
-            <button type="submit" className="button button-dark panel-action" disabled={sending}>{sending ? 'Saving your order…' : 'Send order on WhatsApp'}</button>
+            <p className="panel-note">The branch confirms the final price, brand availability and timing with you.</p>
+            <button type="submit" className="button button-dark panel-action" disabled={sending}>{sending ? 'Sending your order…' : 'Send order'}</button>
+            {sendError && (
+              <div role="alert">
+                <p className="field-error">{sendError}</p>
+                {chosen && <div className="actions"><a className="button button-soft" href={`tel:${chosen.phone}`}>Call {chosen.name}</a></div>}
+              </div>
+            )}
             <p className="panel-note">We save your order details so the branch can process and track it.</p>
           </aside>
         </form>

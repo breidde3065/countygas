@@ -234,3 +234,12 @@ body:has(.scroll-bg) main > section { background: transparent !important; }
   .hours-row { grid-template-columns: 1fr 1fr; }
   .hours-row span { grid-column: 1 / -1; }
 }
+
+/* Mobile: one floating Order button instead of the action bar */
+.fab-order { display: none; }
+@media (max-width: 900px) {
+  body { padding-bottom: 0; }
+  .fab-order { position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 30; display: inline-flex; align-items: center; justify-content: center; min-height: 56px; padding: 0 30px; border-radius: 999px; background: var(--ink); color: #fff; font: 800 14px/1 'DM Sans', sans-serif; letter-spacing: .6px; box-shadow: 0 16px 32px -10px rgba(23, 23, 23, .55); transition: transform .18s, box-shadow .18s; }
+  .fab-order:active { transform: scale(.96); }
+  body.typing .fab-order { display: none; }
+}
