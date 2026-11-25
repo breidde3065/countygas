@@ -24,8 +24,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.join(here, 'data');
 const uploadDir = path.join(here, 'uploads');
 const dbFile = path.join(dataDir, 'products.json');
-fs.mkdirSync(dataDir, { recursive: true });
-fs.mkdirSync(uploadDir, { recursive: true });
+//fs.mkdirSync(dataDir, { recursive: true });
+//fs.mkdirSync(uploadDir, { recursive: true });
 
 // Read server/.env ourselves so this works on any Node version and any shell.
 const envFile = path.join(here, '.env');
