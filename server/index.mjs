@@ -4,6 +4,21 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {put,del} from '@vercel/blob';
+import {
+  getProducts,
+  getProduct,
+  insertProduct,
+  updateProduct,
+  deleteProduct,
+  getSettings,
+  saveSettingsToDb,
+  getOrders,
+  getOrderRefs,
+  getOrder,
+  insertOrder,
+  updateOrder,
+} from './db.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.join(here, 'data');
@@ -39,9 +54,46 @@ const EXT = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' }
 /* ---------- storage ---------- */
 const load = () => { try { return JSON.parse(fs.readFileSync(dbFile, 'utf8')); } catch { return []; } };
 const save = (items) => { const tmp = `${dbFile}.tmp`; fs.writeFileSync(tmp, JSON.stringify(items, null, 2)); fs.renameSync(tmp, dbFile); };
-const dropFile = (name) => fs.unlink(path.join(uploadDir, path.basename(name)), () => {});
-const publicShape = (p) => ({ ...p, images: p.images.map((f) => `/uploads/${f}`) });
+//const dropFile = (name) => fs.unlink(path.join(uploadDir, path.basename(name)), () => {});
+const dropFile = async (url) => {
+  if (url?.startsWith('https://')) {
+    await del(url);
+  }
+};
 
+//const publicShape = (p) => ({ ...p, images: p.images.map((f) => `/uploads/${f}`) });
+
+const publicShape = (p) => ({
+  ...p,
+  images: p.images ?? [],
+});
+
+const storeUploads = async (files = []) => {
+  const uploaded = [];
+
+  try {
+    for (const file of files) {
+      const blob = await put(
+        `products/${crypto.randomUUID()}${EXT[file.mimetype]}`,
+        file.buffer,
+        {
+          access: 'public',
+          addRandomSuffix: true,
+          contentType: file.mimetype,
+        }
+      );
+
+      uploaded.push(blob.url);
+    }
+
+    return uploaded;
+  } catch (error) {
+    if (uploaded.length) {
+      await del(uploaded);
+    }
+    throw error;
+  }
+};
 /* ---------- auth: signed, expiring cookie ---------- */
 const sign = (v) => crypto.createHmac('sha256', SECRET).update(v).digest('hex');
 const safeEq = (a, b) => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && crypto.timingSafeEqual(x, y); };
@@ -52,10 +104,23 @@ const requireAdmin = (req, res, next) => (validToken(cookieOf(req, 'admin')) ? n
 const attempts = new Map();
 
 /* ---------- uploads ---------- */
-const upload = multer({
+{/*const upload = multer({
   storage: multer.diskStorage({ destination: uploadDir, filename: (_r, f, cb) => cb(null, crypto.randomBytes(12).toString('hex') + EXT[f.mimetype]) }),
   fileFilter: (_r, f, cb) => (EXT[f.mimetype] ? cb(null, true) : cb(new Error('Images must be JPG, PNG or WebP.'))),
   limits: { fileSize: 5 * 1024 * 1024, files: 5 },
+});
+*/}
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (_r, f, cb) =>
+    EXT[f.mimetype]
+      ? cb(null, true)
+      : cb(new Error('Images must be JPG, PNG or WebP.')),
+  limits: {
+    fileSize: 800 * 1024,
+    files: 5,
+  },
 });
 
 function parse(body) {
@@ -165,7 +230,7 @@ const limited = (key, max, windowMs) => {
 };
 const csvCell = (v) => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = `'${t}`; return `"${t.replace(/"/g, '""')}"`; };
 
-function parseOrder(b) {
+async function parseOrder(b) {
   const name = trimTo(b?.name, 80);
   const phone = trimTo(b?.phone, 20);
   if (name.length < 2) return { error: 'Enter your name.' };
@@ -178,7 +243,7 @@ function parseOrder(b) {
   }));
   if (!items.length || items.some((i) => !i.size || i.qty === null || i.unitPrice === null)) return { error: 'Check the items in your order.' };
   const branchId = trimTo(b.branchId, 40);
-  const saved = loadSettings();
+  const saved = await getSettings();
   const known = saved?.branches?.find((x) => x.id === branchId);
   if (saved && !known) return { error: 'Choose a branch.' };
   const deliveryFee = mode === 'delivery' ? (intIn(b.deliveryFee, 0, 100000) ?? 0) : 0;
@@ -195,9 +260,9 @@ const app = express();
 app.set('trust proxy', Number(process.env.TRUST_PROXY ?? 1)); // trust first proxy by default, for req.ip and rate limiting
 app.use(express.json({ limit: '100kb' }));
 app.use((_req, res, next) => { res.set('X-Content-Type-Options', 'nosniff'); next(); });
-app.use('/uploads', express.static(uploadDir, { maxAge: '7d', index: false }));
+//app.use('/uploads', express.static(uploadDir, { maxAge: '7d', index: false }));
 
-app.get('/api/products', (_req, res) => res.json(load().map(publicShape)));
+//app.get('/api/products', (_req, res) => res.json(load().map(publicShape)));
 
 app.post('/api/admin/login', (req, res) => {
   const now = Date.now();
@@ -216,9 +281,11 @@ app.post('/api/admin/login', (req, res) => {
 app.post('/api/admin/logout', (_req, res) => { res.set('Set-Cookie', 'admin=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); res.json({ ok: true }); });
 app.get('/api/admin/session', requireAdmin, (_req, res) => res.json({ ok: true }));
 
-const discard = (req) => (req.files ?? []).forEach((f) => dropFile(f.filename));
-
-app.post('/api/admin/products', requireAdmin, upload.array('images', 5), (req, res) => {
+//const discard = (req) => (req.files ?? []).forEach((f) => dropFile(f.filename));
+const discard = (req) => {
+  // Memory storage needs no local-file cleanup.
+};
+{/*app.post('/api/admin/products', requireAdmin, upload.array('images', 5), (req, res) => {
   const { product, error } = parse(req.body);
   if (error) { discard(req); return res.status(400).json({ error }); }
   const item = { id: crypto.randomUUID(), ...product, images: (req.files ?? []).map((f) => f.filename), createdAt: new Date().toISOString() };
@@ -233,7 +300,7 @@ app.put('/api/admin/products/:id', requireAdmin, upload.array('images', 5), (req
   const { product, error } = parse(req.body);
   if (error) { discard(req); return res.status(400).json({ error }); }
   let keep = [];
-  try { keep = JSON.parse(req.body.keepImages ?? '[]'); } catch { /* treat as none */ }
+  try { keep = JSON.parse(req.body.keepImages ?? '[]'); } catch { /* treat as none * 
   keep = items[i].images.filter((f) => keep.includes(f));
   const added = (req.files ?? []).map((f) => f.filename);
   if (keep.length + added.length > 5) { discard(req); return res.status(400).json({ error: 'A product can have at most 5 photos.' }); }
@@ -251,16 +318,144 @@ app.delete('/api/admin/products/:id', requireAdmin, (req, res) => {
   save(items.filter((p) => p.id !== found.id));
   res.json({ ok: true });
 });
+*/}
 
-app.get('/api/settings', (_req, res) => res.json(loadSettings()));
+
+app.get('/api/products', async (_req, res) => {
+  const products = await getProducts();
+  res.json(products.map(publicShape));
+});
+
+
+app.post('/api/admin/products', requireAdmin, upload.array('images', 5), async (req, res) => {
+  const { product, error } = parse(req.body);
+
+  if (error) {
+    return res.status(400).json({ error });
+  }
+
+  let images = [];
+
+  try {
+    images = await storeUploads(req.files);
+
+    const item = {
+      id: crypto.randomUUID(),
+      ...product,
+      images,
+      createdAt: new Date().toISOString(),
+    };
+
+    await insertProduct(item);
+
+    res.status(201).json(publicShape(item));
+  } catch (err) {
+    if (images.length) await del(images);
+    throw err;
+  }
+});
+
+
+
+app.put('/api/admin/products/:id', requireAdmin, upload.array('images', 5), async (req, res) => {
+  const existing = await getProduct(req.params.id);
+
+  if (!existing) {
+    return res.status(404).json({ error: 'Product not found.' });
+  }
+
+  const { product, error } = parse(req.body);
+
+  if (error) {
+    return res.status(400).json({ error });
+  }
+
+  let keep = [];
+
+  try {
+    keep = JSON.parse(req.body.keepImages ?? '[]');
+  } catch {
+    keep = [];
+  }
+
+  keep = (existing.images ?? []).filter((url) => keep.includes(url));
+
+  if (keep.length + (req.files ?? []).length > 5) {
+    return res.status(400).json({
+      error: 'A product can have at most 5 photos.'
+    });
+  }
+
+  let added = [];
+
+  try {
+    added = await storeUploads(req.files);
+
+    const updated = {
+      ...existing,
+      ...product,
+      images: [...keep, ...added],
+    };
+
+    await updateProduct(updated);
+
+    const removed = (existing.images ?? []).filter(
+      (url) => !keep.includes(url)
+    );
+
+    await Promise.all(removed.map(dropFile));
+
+    res.json(publicShape(updated));
+  } catch (err) {
+    if (added.length) await del(added);
+    throw err;
+  }
+});
+
+
+
+app.delete('/api/admin/products/:id', requireAdmin, async (req, res) => {
+  const existing = await getProduct(req.params.id);
+
+  if (!existing) {
+    return res.status(404).json({ error: 'Product not found.' });
+  }
+
+  await deleteProduct(req.params.id);
+
+  await Promise.all(
+    (existing.images ?? []).map(dropFile)
+  );
+
+  res.json({ ok: true });
+});
+
+
+
+{/*app.get('/api/settings', (_req, res) => res.json(loadSettings()));
 app.put('/api/admin/settings', requireAdmin, (req, res) => {
   const { settings, error } = parseSettings(req.body);
   if (error) return res.status(400).json({ error });
   saveSettings(settings);
   res.json(settings);
 });
+*/}
 
-app.post('/api/orders', (req, res) => {
+app.get('/api/settings', async (_req, res) => {
+  const settings = await getSettings();
+  res.json(settings ?? loadSettings());
+});
+
+app.put('/api/admin/settings', requireAdmin, async (req, res) => {
+  const { settings, error } = parseSettings(req.body);
+
+  if (error) return res.status(400).json({ error });
+
+  await saveSettingsToDb(settings);
+  res.json(settings);
+});
+
+{/*app.post('/api/orders', (req, res) => {
   if (limited(`order:${req.ip}`, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'Too many orders from this connection. Please call the branch.' });
   const { order, error } = parseOrder(req.body);
   if (error) return res.status(400).json({ error });
@@ -300,6 +495,144 @@ app.patch('/api/admin/orders/:ref', requireAdmin, (req, res) => {
   saveOrders(orders);
   res.json(o);
 });
+*/}
+
+
+app.post('/api/orders', async (req, res) => {
+  if (limited(`order:${req.ip}`, 10, 60 * 60 * 1000)) {
+    return res.status(429).json({
+      error: 'Too many orders from this connection. Please call the branch.'
+    });
+  }
+
+  const { order, error } =await parseOrder(req.body);
+  if (error) return res.status(400).json({ error });
+
+  const refs = new Set(await getOrderRefs());
+  const now = new Date().toISOString();
+
+  const record = {
+    ref: makeRef(refs),
+    createdAt: now,
+    status: 'new',
+    ...order,
+    history: [{ status: 'new', at: now }]
+  };
+
+  await insertOrder(record);
+
+  res.status(201).json({ ref: record.ref });
+});
+
+app.get('/api/orders/track', async (req, res) => {
+  if (limited(`track:${req.ip}`, 20, 15 * 60 * 1000)) {
+    return res.status(429).json({
+      error: 'Too many lookups. Try again in a few minutes.'
+    });
+  }
+
+  const ref = trimTo(req.query.ref, 20).toUpperCase();
+  const o = await getOrder(ref);
+
+  if (!o || phoneKey(o.phone) !== phoneKey(req.query.phone)) {
+    return res.status(404).json({
+      error: 'No order found with those details. Check the reference and the phone number you ordered with.'
+    });
+  }
+
+  const {
+    ref: r,
+    status,
+    mode,
+    branchName,
+    items,
+    total,
+    deliveryFee,
+    createdAt,
+    history
+  } = o;
+
+  res.json({
+    ref: r,
+    status,
+    mode,
+    branchName,
+    items,
+    total,
+    deliveryFee,
+    createdAt,
+    history
+  });
+});
+
+app.get('/api/admin/orders', requireAdmin, async (_req, res) => {
+  res.json(await getOrders());
+});
+
+app.get('/api/admin/orders.csv', requireAdmin, async (_req, res) => {
+  const head = [
+    'Reference', 'Placed', 'Status', 'Name', 'Phone', 'Branch',
+    'Type', 'Location', 'Payment', 'Items',
+    'Cylinders total (KES)', 'Delivery fee (KES)', 'Note'
+  ];
+
+  const orders = await getOrders();
+
+  const rows = orders.map((o) => [
+    o.ref,
+    o.createdAt,
+    o.status,
+    o.name,
+    o.phone,
+    o.branchName,
+    o.mode,
+    o.location,
+    o.payment,
+    o.items.map((i) =>
+      `${i.qty} x ${i.size}kg ${i.kind === 'refill' ? 'refill' : 'new'}${i.brand ? ` ${i.brand}` : ''}`
+    ).join('; '),
+    o.total,
+    o.deliveryFee,
+    o.note
+  ]);
+
+  res.set({
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': 'attachment; filename="orders.csv"'
+  });
+
+  res.send(
+    '\ufeff' + [head, ...rows]
+      .map((r) => r.map(csvCell).join(','))
+      .join('\r\n')
+  );
+});
+
+app.patch('/api/admin/orders/:ref', requireAdmin, async (req, res) => {
+  const o = await getOrder(req.params.ref);
+
+  if (!o) return res.status(404).json({ error: 'Order not found.' });
+
+  const status = req.body?.status;
+
+  if (!STATUSES.includes(status)) {
+    return res.status(400).json({ error: 'Unknown status.' });
+  }
+
+  if (status !== o.status) {
+    o.status = status;
+    o.history.push({
+      status,
+      at: new Date().toISOString()
+    });
+  }
+
+  await updateOrder(o);
+
+  res.json(o);
+});
+
+
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
@@ -309,4 +642,12 @@ app.use((err, _req, res, _next) => {
   res.status(400).json({ error: message });
 });
 
-app.listen(PORT, () => console.log(`County Gas API on http://localhost:${PORT}`));
+//app.listen(PORT, () => console.log(`County Gas API on http://localhost:${PORT}`));
+
+export default app;
+
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`County Gas API on http://localhost:${PORT}`);
+  });
+}
