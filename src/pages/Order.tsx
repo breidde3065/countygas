@@ -58,8 +58,23 @@ function Stepper({ id, value, onChange }: { id: string; value: number; onChange:
 
 export default function Order() {
   usePageTitle('Order');
-  const { branches, brands, sizes } = useSettings();
+  const { branches,  sizes } = useSettings();
   const catalog = useCatalog();
+  const stockBrandsFor = (size: string) =>
+  Array.from(
+    new Set(
+      catalog
+        .filter(
+          (p) =>
+            !p.id.startsWith('static') &&
+            p.inStock &&
+            p.category === 'cylinder' &&
+            p.size === size &&
+            p.brand?.trim()
+        )
+        .map((p) => p.brand.trim())
+    )
+  ).sort((a, b) => a.localeCompare(b));
   const [params] = useSearchParams();
   const { branch, setBranch } = useBranch();
 
@@ -73,7 +88,7 @@ export default function Order() {
 
   const defaultSize = (sizes.find((s) => s.kg === '13') ?? sizes[0]).kg;
   const sizeParam = params.get('size');
-  const accessory = params.get('accessory');
+  //const accessory = params.get('accessory');
   const [lines, setLines] = useState<Line[]>([
     { id: nextId++, size: sizes.some((s) => s.kg === sizeParam) ? (sizeParam as string) : defaultSize, kind: params.get('type') === 'fresh' ? 'fresh' : 'refill', qty: 1, brand: '' },
   ]);
@@ -83,7 +98,7 @@ export default function Order() {
   const [mode, setMode] = useState('delivery');
   const [location, setLocation] = useState('');
   const [payment, setPayment] = useState('M-Pesa on delivery');
-  const [note, setNote] = useState(accessory ? `Also interested in: ${accessory}` : '');
+  //const [note, setNote] = useState(accessory ? `Also interested in: ${accessory}` : '');
   const [errors, setErrors] = useState<Errors>({});
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
@@ -117,11 +132,19 @@ export default function Order() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: name.trim(), phone: normalisePhone(phone), branchId: chosen.id, branchName: chosen.name, mode, location: location.trim(), payment, note: note.trim(), deliveryFee,
+          name: name.trim(), phone: normalisePhone(phone), branchId: chosen.id, branchName: chosen.name, mode, location: location.trim(), payment, deliveryFee,
           items: lines.map((l) => ({ size: l.size, kind: l.kind, qty: l.qty, brand: l.brand, unitPrice: priceOf(l) })),
         }),
       });
       setBranch(chosen.id);
+      try {
+        window.sessionStorage.setItem(
+          'county-gas-track-phone',
+           normalisePhone(phone)
+         );
+      } catch {
+  
+      }
       setReceipt({ ref: saved.ref, branchName: chosen.name, branchPhone: chosen.phone, mode: mode as Receipt['mode'], lines: lines.map((l) => ({ label: label(l), amount: priceOf(l) * l.qty })), total, deliveryFee });
       window.scrollTo(0, 0);
     } catch (err) {
@@ -134,7 +157,7 @@ export default function Order() {
 
   const startAnother = () => {
     setReceipt(null);
-    setNote('');
+    
     setLines([{ id: nextId++, size: defaultSize, kind: 'refill', qty: 1, brand: '' }]);
   };
 
@@ -180,7 +203,7 @@ export default function Order() {
                     <strong>Item {i + 1}</strong>
                     {lines.length > 1 && <button type="button" className="linkish" onClick={() => setLines((ls) => ls.filter((x) => x.id !== l.id))}>Remove</button>}
                   </div>
-                  <Choices compact name={`size-${l.id}`} label="Size" value={l.size} onChange={(v) => update(l.id, { size: v })}
+                  <Choices compact name={`size-${l.id}`} label="Size" value={l.size} onChange={(v) => update(l.id, { size: v, brand: '' })}
                     options={sizes.map((s) => ({ value: s.kg, title: `${s.kg} kg` }))} />
                   <Choices name={`kind-${l.id}`} label="Type" value={l.kind} onChange={(v) => update(l.id, { kind: v as Kind })}
                     options={[
@@ -191,7 +214,11 @@ export default function Order() {
                     <Field id={`brand-${l.id}`} label="Brand">
                       <select id={`brand-${l.id}`} value={l.brand} onChange={(e) => update(l.id, { brand: e.target.value })}>
                         <option value="">Any brand</option>
-                        {brands.map((b) => (<option key={b}>{b}</option>))}
+                        {stockBrandsFor(l.size).map((b) => (
+                           <option key={b} value={b}>
+                             {b}
+                           </option>
+                        ))}
                       </select>
                     </Field>
                     <Field id={`qty-${l.id}`} label="Quantity">
@@ -238,9 +265,7 @@ export default function Order() {
               )}
               <Choices name="payment" label="Payment" value={payment} onChange={setPayment}
                 options={[{ value: 'M-Pesa on delivery', title: 'M-Pesa' }, { value: 'Cash on delivery', title: 'Cash' }]} />
-              <Field id="note" label="Note (optional)">
-                <textarea id="note" value={note} onChange={(e) => setNote(e.target.value)} />
-              </Field>
+              
             </fieldset>
           </div>
 

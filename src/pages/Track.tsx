@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import type { FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
@@ -16,7 +16,9 @@ export default function Track() {
   const { branches } = useSettings();
   const [params] = useSearchParams();
   const [ref, setRef] = useState((params.get('ref') ?? '').toUpperCase());
-  const [phone, setPhone] = useState('');
+  const [phone, setPhone] = useState(
+    () => window.sessionStorage.getItem('county-gas-track-phone') ?? ''
+  );
   const [order, setOrder] = useState<TrackedOrder | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -30,7 +32,19 @@ export default function Track() {
       if (!quiet) { setOrder(null); setError((e as Error).message); }
     } finally { if (!quiet) setBusy(false); }
   }, [ref, phone]);
+  const autoLookupDone = useRef(false);
 
+  useEffect(() => {
+    if (autoLookupDone.current) return;
+
+    const hasOrderRef = params.get('ref')?.trim();
+    const hasSavedPhone = phone.trim();
+
+    if (hasOrderRef && hasSavedPhone) {
+      autoLookupDone.current = true;
+      lookup();
+    }
+  }, [lookup, params, phone]);
   // keep the status fresh while the page is open
   useEffect(() => {
     if (!order) return;
